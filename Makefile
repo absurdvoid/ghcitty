@@ -1,6 +1,4 @@
 SHELL := /bin/zsh
-# Snapshot the original PATH before we prepend, so `install` can check what
-# the user's shell would actually pick up.
 ORIG_PATH := $(PATH)
 export PATH := $(HOME)/.cargo/bin:$(HOME)/.ghcup/bin:$(HOME)/.local/bin:$(PATH)
 

@@ -291,9 +291,9 @@ fn config_kind(key: &str) -> Option<ConfigKind> {
     }
 }
 
-/// Session `let` bindings as top-level decls for the out-of-process `:core`
-/// compile. Strips the `let ` prefix and dedupes by name, latest wins (matching
-/// GHCi shadowing).
+/// The session's `let` bindings as top-level decls, for `:core` to splice in.
+/// Drops the `let ` prefix and keeps only the latest definition of each name,
+/// same as GHCi shadowing.
 fn session_bindings(sess: &session::Session) -> Vec<String> {
     let exprs = sess.replay_exprs().unwrap_or_default();
     let mut out: Vec<(String, String)> = Vec::new();

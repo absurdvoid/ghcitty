@@ -1,6 +1,6 @@
-//! `:core` / `:stg` viewer. GHCi runs interpreted bytecode, so it can't show
-//! optimized output. We drop the expression into a temp module, compile it
-//! out-of-process with `-O2` plus a dump flag, then extract and highlight it.
+//! `:core` / `:stg` / `:cmm` viewer. GHCi runs interpreted bytecode, so it
+//! never sees optimized code. Instead we drop the expression into a temp
+//! module, compile it with `-O2` and a dump flag, and highlight what comes out.
 
 use std::collections::HashMap;
 use std::process::Command;
@@ -34,9 +34,8 @@ impl DumpKind {
     }
 }
 
-/// Name we wrap the expression in. `it` mirrors GHCi's name for the last
-/// result, so the dump reads as the user's own expression rather than exposing
-/// an internal binding.
+/// Name we bind the expression to. GHCi already calls the last result `it`,
+/// so the dump looks familiar instead of showing some internal name.
 const BINDING: &str = "it";
 
 /// Compile `expr` under `-O2` and return the highlighted dump, or GHC's error
@@ -85,11 +84,11 @@ pub fn dump(
         return Err(Error::Ghc(msg));
     }
     let filtered = match kind {
-        // Cmm is banner-delimited sections, not `name = ...` bindings.
+        // Cmm comes as banner-separated chunks, not `name = ...` bindings.
         DumpKind::Cmm => filter_cmm(&section),
         DumpKind::Core | DumpKind::Stg => filter_reachable(&section),
     };
-    Ok(render(&filtered))
+    Ok(render(kind, &strip_header(&filtered)))
 }
 
 fn build_module(expr: &str, imports: &[String], bindings: &[String]) -> String {
@@ -113,8 +112,8 @@ fn build_module(expr: &str, imports: &[String], bindings: &[String]) -> String {
         src.push_str(binding);
         src.push('\n');
     }
-    // Parenthesize so a multi-token expression binds as a whole. Indent the
-    // body past column 1 or GHC's layout rule reads it as a new top-level decl.
+    // Wrap in parens so a multi-token expression stays one expression, and
+    // indent it, otherwise the layout rule sees a new top-level decl.
     src.push_str(&format!("{BINDING} =\n  (\n"));
     for line in expr.lines() {
         src.push_str("    ");
@@ -125,8 +124,8 @@ fn build_module(expr: &str, imports: &[String], bindings: &[String]) -> String {
     src
 }
 
-/// Build the compiler invocation for the launch mode so the temp module sees
-/// the same package set. Plain ghci uses `ghc`, projects use the wrapper.
+/// Run ghc the same way the REPL was launched (plain, stack or cabal) so the
+/// temp module sees the same packages.
 fn run_ghc(mode: LaunchMode, flags: &[&str]) -> Result<std::process::Output> {
     let mut cmd = match mode {
         LaunchMode::Plain => {
@@ -167,22 +166,18 @@ fn is_ident_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_' || c == '\'' || c == '#' || c == '$'
 }
 
-/// We splice all session `let` bindings into the temp module, so the dump also
-/// contains unrelated ones. Keep only the banner plus bindings reachable from
-/// `it`. Returns the whole section if the shape is unexpected.
+/// Every session `let` binding gets spliced into the temp module, so the dump
+/// is full of stuff the user didn't ask about. Keep the banner and whatever
+/// `it` actually uses. If the dump doesn't look the way we expect, return it
+/// untouched.
 fn filter_reachable(section: &str) -> String {
-    // Set banner / "Result size" lines aside; group the rest into bindings
-    // separated by blank lines.
+    // Put the banner and "Result size" lines aside, then split the rest into
+    // bindings on blank lines.
     let mut header: Vec<&str> = Vec::new();
     let mut blocks: Vec<Vec<&str>> = Vec::new();
     let mut cur: Vec<&str> = Vec::new();
     for line in section.lines() {
-        let trimmed = line.trim_start();
-        // `= {terms: ...}` is the continuation of the `Result size` line.
-        if trimmed.starts_with("====")
-            || trimmed.starts_with("Result size")
-            || trimmed.starts_with("= {")
-        {
+        if is_header_line(line) {
             if !cur.is_empty() {
                 blocks.push(std::mem::take(&mut cur));
             }
@@ -199,11 +194,9 @@ fn filter_reachable(section: &str) -> String {
         blocks.push(cur);
     }
 
-    // Binders are the leading tokens of a block's definition lines, skipping
-    // `-- RHS size` comments and `[IdInfo]` annotations. A `Rec { ... }` group
-    // holds several mutually recursive bindings, so one block can define more
-    // than one name; register them all, and skip the `Rec {` / `end Rec }`
-    // markers so they aren't mistaken for binders.
+    // A block's binders are the names at column 0, ignoring `-- RHS size`
+    // comments, `[IdInfo]` annotations and the `Rec {` / `end Rec }` markers.
+    // A `Rec` group can define several names, so collect all of them.
     let binders = |block: &[&str]| -> Vec<String> {
         let mut names = Vec::new();
         for line in block {
@@ -234,8 +227,8 @@ fn filter_reachable(section: &str) -> String {
         }
     }
 
-    // Reachability from the wrapper binding. Bail to the full section if we
-    // can't find it (unexpected dump shape).
+    // Walk everything reachable from `it`. No `it` means the dump has a shape
+    // we don't understand, so just show the whole thing.
     let Some(&root) = name_to_idx.get(BINDING) else {
         return section.to_string();
     };
@@ -270,10 +263,10 @@ fn filter_reachable(section: &str) -> String {
     out.join("\n").trim_end().to_string()
 }
 
-/// GHC emits one `==== Output Cmm ====` banner per top-level symbol. Keep only
-/// chunks mentioning our wrapper (`it` and floated `it1`..);
-/// spliced session bindings get their own `*_closure` symbols and are dropped.
-/// Returns the whole section if nothing matched.
+/// GHC prints one `==== Output Cmm ====` banner per top-level symbol. Keep the
+/// chunks that mention `it` (or floated-out `it1`, `it2`, ...) and drop the
+/// ones that belong to spliced session bindings. If nothing matches, return
+/// the whole section.
 fn filter_cmm(section: &str) -> String {
     let mut chunks: Vec<Vec<&str>> = Vec::new();
     let mut cur: Vec<&str> = Vec::new();
@@ -302,18 +295,34 @@ fn filter_cmm(section: &str) -> String {
     kept.join("\n\n")
 }
 
-fn render(section: &str) -> String {
-    let mut out = String::new();
-    for line in section.lines() {
-        let trimmed = line.trim_start();
-        if trimmed.starts_with("====")
-            || trimmed.starts_with("Result size")
-            || trimmed.starts_with("= {")
-        {
-            out.push_str(&style::dim().paint(line).to_string());
-        } else {
-            out.push_str(&highlight::highlight_input(line));
+/// GHC's `==== ... ====` banners and the `Result size` line (plus its
+/// `= {terms: ...}` continuation). Compiler log noise, not code.
+fn is_header_line(line: &str) -> bool {
+    let t = line.trim_start();
+    t.starts_with("====") || t.starts_with("Result size") || t.starts_with("= {")
+}
+
+/// Drop the header lines and squash the blank runs they leave behind, so
+/// what's left is just the code.
+fn strip_header(section: &str) -> String {
+    let mut out: Vec<&str> = Vec::new();
+    for line in section.lines().filter(|l| !is_header_line(l)) {
+        let blank = line.trim().is_empty();
+        if blank && out.last().is_none_or(|l| l.trim().is_empty()) {
+            continue;
         }
+        out.push(line);
+    }
+    out.join("\n").trim_end().to_string()
+}
+
+fn render(kind: DumpKind, section: &str) -> String {
+    let mut out = style::dim()
+        .paint(format!("-- {}, -O2", kind.label()))
+        .to_string();
+    out.push('\n');
+    for line in section.lines() {
+        out.push_str(&highlight::highlight_input(line));
         out.push('\n');
     }
     out
@@ -372,9 +381,8 @@ mod tests {
 
     #[test]
     fn filter_reachable_keeps_rec_worker_loop() {
-        // `sum [..]` compiles to a recursive worker inside a `Rec { .. }` group.
-        // The worker's binder is `$wgo3`, not `Rec`, and the wrapper references
-        // it, so the whole loop must survive the filter.
+        // `sum [..]` compiles to a recursive worker `$wgo3` inside a `Rec`
+        // group. `it` calls it, so the whole loop has to survive the filter.
         let section = "==================== Tidy Core ====================\n\
             Result size of Tidy Core\n\
             \x20 = {terms: 27, types: 8, coercions: 0, joins: 0/0}\n\n\
@@ -431,6 +439,24 @@ mod tests {
         let section = "==================== Output Cmm ====================\n\
             [section \"\"data\" . y_closure\" { y_closure: }]";
         assert_eq!(filter_cmm(section), section);
+    }
+
+    #[test]
+    fn strip_header_leaves_just_the_code() {
+        let section = "==================== Tidy Core ====================\n\
+            Result size of Tidy Core\n\
+            \x20 = {terms: 3, types: 1, coercions: 0, joins: 0/0}\n\n\
+            it = I# 12#";
+        assert_eq!(strip_header(section), "it = I# 12#");
+    }
+
+    #[test]
+    fn strip_header_squashes_cmm_banner_gaps() {
+        let section = "==================== Output Cmm ====================\n\
+            [it_closure]\n\n\n\
+            ==================== Output Cmm ====================\n\
+            [it1_closure]";
+        assert_eq!(strip_header(section), "[it_closure]\n\n[it1_closure]");
     }
 
     #[test]
