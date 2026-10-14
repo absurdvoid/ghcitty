@@ -41,7 +41,13 @@ fn home_dir() -> Option<PathBuf> {
 
 impl Session {
     pub fn new(name: Option<&str>) -> Result<Self> {
-        let dir = sessions_dir()?;
+        Self::new_in(sessions_dir()?, name)
+    }
+
+    /// Build a session inside `dir`. Split out from `new` so tests can use a
+    /// temp dir, since HOME is read-only in the Nix build sandbox.
+    fn new_in(dir: PathBuf, name: Option<&str>) -> Result<Self> {
+        fs::create_dir_all(&dir)?;
         let filename = match name {
             Some(n) => format!("{n}.hs"),
             None => {
@@ -258,10 +264,18 @@ mod tests {
 
     #[test]
     fn test_symlink_created() {
-        // This test only checks that new() doesn't panic
-        // and creates a file path that makes sense
-        let session = Session::new(Some("test-symlink")).unwrap();
+        // Use a temp dir, not the real session dir, so the test doesn't need a
+        // writable home (the Nix sandbox sets HOME read-only).
+        let dir = std::env::temp_dir().join("ghcitty-test-symlink");
+        let session = Session::new_in(dir.clone(), Some("test-symlink")).unwrap();
         assert!(session.path().to_string_lossy().contains("test-symlink.hs"));
+        // The `latest` symlink should point at the new session file.
+        #[cfg(unix)]
+        {
+            let target = fs::read_link(dir.join("latest.hs")).unwrap();
+            assert_eq!(target.to_string_lossy(), "test-symlink.hs");
+        }
         let _ = fs::remove_file(session.path());
+        let _ = fs::remove_file(dir.join("latest.hs"));
     }
 }

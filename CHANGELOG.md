@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.5.0] - 2026-10-14
+
+### Added
+- `:core` / `:stg` / `:cmm` show the `-O2` dump for an expression, using your session imports and `let` bindings.
+- Typed holes: `Tab` on a `_` offers GHC's valid fits with signatures.
+
+### Fixed
+- Filename args (`:load Foo.hs`, `:open Test.hs`) no longer highlighted as Haskell.
+- `nix build` no longer fails in `test_symlink_created` (#32).
+
 ## [0.4.0] - 2026-05-19
 
 ### Added

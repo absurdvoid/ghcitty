@@ -23,8 +23,9 @@
 ## Features
 
 - Syntax highlighting
-- Structured errors with expected/actual diffs, auto-import hints, error code links
 - Tab completion with inline types
+- Typed holes: Tab on a `_` for valid fits
+- Core/STG/Cmm viewer for all expressions
 - Fish-style ghost completions
 - Pretty-printed `Show` output (records, lists, tuples)
 - Hoogle integration
@@ -112,6 +113,11 @@ Multiline is auto-detected. Up/Down to move between lines, blank line to submit.
 <img src="https://raw.githubusercontent.com/mattlianje/ghcitty/master/demos/auto-multiline-nav.gif" width="600">
 
 
+#### Core/STG/Cmm viewer
+`:core` (also `:stg`, `:cmm`) compiles the expression with `-O2` and shows the optimized output. Here the lists fuse away into one tight loop over unboxed `Int#`.
+
+<img src="https://raw.githubusercontent.com/mattlianje/ghcitty/master/demos/core.gif" width="600">
+
 #### Hoogle
 `:hoogle` to search by name or type, `:doc` for Haddock docs.
 
@@ -133,6 +139,9 @@ All GHCi `:` commands pass through. Extras:
 ```
 :hoogle <???>              Search Hoogle for <???>
 :doc <???>                 Haddock docs for <???> via Hoogle
+:core <expr>               Show the optimized (-O2) GHC Core for <expr>
+:stg <expr>                Show the optimized (-O2) STG for <expr>
+:cmm <expr>                Show the optimized (-O2) Cmm (C--) for <expr>
 :/ OR :/<???>              Show all bindings OR fuzzy search for <???> binding
 :e OR :edit OR <CTRL> + g  Open $EDITOR, eval on save
 :scratch                   Open the persistent Scratch.hs in $EDITOR, :load on save (no args)
@@ -184,11 +193,19 @@ Basically "automatic" multiline uses a pretty simple and reliable heuristic...
 - `Blank line` + `<RET>` submits your expression
 - Bracketed paste is treated as if you used a `:{/:}` block
 
-**How does completion work?**<br>
+**How does the completion work?**<br>
 - `<TAB>` opens a columnar menu using `:complete repl` with full line context, so `:m + Data.Li<Tab>` completes module names.
-- For short candidate lists, the type of each match shows alongside it.
-- Ghcitty's own slash commands (`:scratch`, `:config_*`, `:edit`, `:undo`, `:doc`, `:hoogle`) appear in completions and ghost hints too.
-- Ghost completions show the top match dimmed after 2+ chars.
+
+**How do typed holes work?**<br>
+- Put a `_` in an expression, cursor on it, and `<TAB>`.
+- ghcitty asks GHC about the hole and offers the valid fits, with signatures, as completions.
+- GHC needs enough context to infer fits, so fill in the rest of the expression first.
+
+**How does the Core/STG/Cmm viewer work?**<br>
+- `:core` / `:stg` / `:cmm` compile the expression out-of-process with `-O2` and a dump flag, since interpreted GHCi can't show optimized output
+- The dump is cleaned up (`-dsuppress-all`) and syntax-highlighted.
+- It reuses your session imports and `let` bindings, so `:core <name>` works for things you defined at the prompt.
+- Of note: only the bindings your expression uses are shown, so unrelated ones don't clutter it.
 
 **How does the hoogle integration work?**<br>
 It tries the local `hoogle` CLI first, falls back to web API...

@@ -1,4 +1,5 @@
 mod config;
+mod core;
 mod error;
 mod ghc;
 mod highlight;
@@ -288,6 +289,50 @@ fn config_kind(key: &str) -> Option<ConfigKind> {
         "max_output_lines" | "max_output_chars" => Some(ConfigKind::Number),
         _ => None,
     }
+}
+
+/// The session's `let` bindings as top-level decls, for `:core` to splice in.
+/// Drops the `let ` prefix and keeps only the latest definition of each name,
+/// same as GHCi shadowing.
+fn session_bindings(sess: &session::Session) -> Vec<String> {
+    let exprs = sess.replay_exprs().unwrap_or_default();
+    let mut out: Vec<(String, String)> = Vec::new();
+    for e in exprs {
+        if !parse::is_let_binding(&e) {
+            continue;
+        }
+        let Some(name) = parse::let_bound_name(&e) else {
+            continue;
+        };
+        let trimmed = e.trim();
+        let decl = trimmed.strip_prefix("let ").unwrap_or(trimmed).to_string();
+        match out.iter().position(|(n, _)| n == &name) {
+            Some(i) => out[i].1 = decl,
+            None => out.push((name, decl)),
+        }
+    }
+    out.into_iter().map(|(_, decl)| decl).collect()
+}
+
+/// Split `:core <expr>` / `:stg <expr>` / `:cmm <expr>` into its dump kind and
+/// the expression. Returns None for any other command.
+fn parse_dump_cmd(expr: &str) -> Option<(core::DumpKind, &str)> {
+    if let Some(rest) = expr.strip_prefix(":core") {
+        if rest.is_empty() || rest.starts_with(' ') {
+            return Some((core::DumpKind::Core, rest));
+        }
+    }
+    if let Some(rest) = expr.strip_prefix(":stg") {
+        if rest.is_empty() || rest.starts_with(' ') {
+            return Some((core::DumpKind::Stg, rest));
+        }
+    }
+    if let Some(rest) = expr.strip_prefix(":cmm") {
+        if rest.is_empty() || rest.starts_with(' ') {
+            return Some((core::DumpKind::Cmm, rest));
+        }
+    }
+    None
 }
 
 /// Detects `:set prompt`, `:set prompt-cont`, `:set prompt-function`, etc.
@@ -792,6 +837,50 @@ fn repl(
                 continue;
             }
 
+            // `:core`/`:stg`/`:cmm`: compile out-of-process with -O2 plus a
+            // dump flag to show optimized output.
+            if let Some((kind, rest)) = parse_dump_cmd(&expr) {
+                let rest = rest.trim().to_string();
+                if rest.is_empty() {
+                    drop(g);
+                    eprintln!(
+                        ":{} takes an expression, e.g. `:{} sum [1..10]`",
+                        kind.label(),
+                        kind.label()
+                    );
+                    continue;
+                }
+                let imports = g.current_imports();
+                drop(g);
+                let bindings = session_bindings(sess);
+                if !json_mode {
+                    eprint!("{}{CR}", style::dim().paint("(compiling with -O2...)"));
+                }
+                match core::dump(kind, &rest, &imports, &bindings, mode) {
+                    Ok(out) => {
+                        if json_mode {
+                            println!(
+                                "{}",
+                                serde_json::json!({"command": expr, "output": render::strip_ansi(&out)})
+                            );
+                        } else {
+                            print!("{CLEAR_LINE}{out}");
+                        }
+                    }
+                    Err(e) => {
+                        if json_mode {
+                            println!(
+                                "{}",
+                                serde_json::json!({"command": expr, "error": e.to_string()})
+                            );
+                        } else {
+                            eprintln!("{CLEAR_LINE}{}", render::render_passthrough(&e.to_string()));
+                        }
+                    }
+                }
+                continue;
+            }
+
             // `:! cmd` in interactive mode runs the shell as a direct child of
             // ghcitty with inherited stdio, so fullscreen TUIs (vi/less/htop)
             // get a real TTY (issue #15). Auto-reload picks up edited files on
@@ -847,6 +936,8 @@ fn repl(
             let (result, was_interactive) = g.eval_interactive(&expr)?;
             let elapsed = t0.elapsed();
             sess.record(&result)?;
+            drop(g);
+
             if json_mode {
                 println!("{}", json::to_json(&result));
             } else if was_interactive {
