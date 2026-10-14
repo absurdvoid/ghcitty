@@ -24,10 +24,8 @@
 
 - Syntax highlighting
 - Tab completion with inline types
-- Typed holes: Tab on a `_` for valid fits
-- Core/STG/Cmm viewer for all expressions
 - Fish-style ghost completions
-- Pretty-printed `Show` output (records, lists, tuples)
+- Pretty-printing
 - Hoogle integration
 - Binding explorer
 - Auto-detect stack/cabal projects
@@ -35,6 +33,8 @@
 - Auto-saved, resumable sessions
 - JSON mode for tooling
 - Auto-reload on file changes
+- Typed holes completion
+- Core/STG/Cmm viewer for all expressions
 - Vi mode
 
 ## Of note
