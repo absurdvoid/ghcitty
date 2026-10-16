@@ -10,7 +10,8 @@
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
-      in {
+      in
+      {
         packages.default = pkgs.rustPlatform.buildRustPackage {
           pname = "ghcitty";
           version = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).package.version;
@@ -19,7 +20,7 @@
         };
 
         devShells.default = pkgs.mkShell {
-          buildInputs = with pkgs; [ cargo rustc ghc hoogle ];
+          buildInputs = with pkgs; [ cargo rustc ghc rust-analyzer ];
         };
       });
 }
