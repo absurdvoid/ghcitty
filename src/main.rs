@@ -18,8 +18,9 @@ use std::time::Instant;
 
 use clap::{Parser, Subcommand};
 use reedline::{
-    default_vi_insert_keybindings, default_vi_normal_keybindings, EditCommand, KeyCode,
-    KeyModifiers, Keybindings, Reedline, ReedlineEvent, ReedlineMenu, Signal, Vi,
+    default_vi_insert_keybindings, default_vi_normal_keybindings, CursorConfig,
+    EditCommand, KeyCode, KeyModifiers, Keybindings, Reedline, ReedlineEvent,
+    ReedlineMenu, Signal, Vi,
 };
 
 // TODO: revisit this cursor control
@@ -287,6 +288,8 @@ fn config_kind(key: &str) -> Option<ConfigKind> {
     match key {
         "pretty_errors" | "pretty_print" | "show_timing" => Some(ConfigKind::Bool),
         "max_output_lines" | "max_output_chars" => Some(ConfigKind::Number),
+        // This isn't really a number, but the handling is identical.
+        "vi_insert_cursor_style" | "vi_normal_cursor_style" => Some(ConfigKind::Number),
         _ => None,
     }
 }
@@ -497,12 +500,19 @@ fn repl(
         .unwrap_or_else(|_| "vi".into());
     let temp_file = std::env::temp_dir().join("ghcitty-edit.hs");
 
+    let cursor_config = CursorConfig {
+        vi_insert: Some(config.vi_insert_cursor_style),
+        vi_normal: Some(config.vi_normal_cursor_style),
+        ..CursorConfig::default()
+    };
+
     let mut line_editor = Reedline::create()
         .with_completer(completer)
         .with_hinter(hinter)
         .with_highlighter(highlighter)
         .with_validator(validator)
         .with_history(history)
+        .with_cursor_config(cursor_config)
         // Don't save quit commands to history (issue #19): pressing Up right
         // after starting ghcitty would otherwise replay `:q` and exit. Covers
         // `:q` and `:quit`; GHCi has no other `:q*` commands.
@@ -666,6 +676,11 @@ fn repl(
             if expr.starts_with(":config_") {
                 drop(g);
                 config_dispatch(&expr, &mut config, json_mode);
+                line_editor = line_editor.with_cursor_config(CursorConfig {
+                    vi_insert: Some(config.vi_insert_cursor_style),
+                    vi_normal: Some(config.vi_normal_cursor_style),
+                    ..CursorConfig::default()
+                });
                 continue;
             }
 

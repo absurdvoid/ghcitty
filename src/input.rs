@@ -86,6 +86,8 @@ const GHCITTY_CMDS: &[&str] = &[
     ":config_show_timing",
     ":config_max_output_lines ",
     ":config_max_output_chars ",
+    ":config_vi_insert_cursor_style ",
+    ":config_vi_normal_cursor_style ",
 ];
 
 /// Prepend any ghcitty-native commands matching `word` to the GHCi completion
