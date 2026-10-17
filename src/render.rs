@@ -694,6 +694,7 @@ pub fn strip_ansi(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crossterm::cursor::SetCursorStyle;
 
     fn make_diag(severity: &str, message: &str) -> Diagnostic {
         parse::simple_diagnostic(severity, message.to_string())
@@ -709,6 +710,8 @@ mod tests {
             show_timing: false,
             max_output_lines: 20,
             max_output_chars: 3000,
+            vi_insert_cursor_style: SetCursorStyle::BlinkingBlock,
+            vi_normal_cursor_style: SetCursorStyle::SteadyBlock,
         }
     }
     fn timing_cfg() -> Config {
@@ -718,6 +721,8 @@ mod tests {
             show_timing: true,
             max_output_lines: 20,
             max_output_chars: 3000,
+            vi_insert_cursor_style: SetCursorStyle::BlinkingBlock,
+            vi_normal_cursor_style: SetCursorStyle::SteadyBlock,
         }
     }
 

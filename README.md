@@ -156,10 +156,12 @@ All GHCi `:` commands pass through. Extras:
 
 ```
 pretty_errors = true
-pretty_print = true 
-max_output_lines = 50    # 0 disables
-max_output_chars = 3000  # 0 disable
-show_timing = false      # show eval timing (default: false)
+pretty_print = true
+max_output_lines = 50                  # 0 disables
+max_output_chars = 3000                # 0 disable
+show_timing = false                    # show eval timing (default: false)
+vi_insert_cursor_style = BlinkingBlock
+vi_normal_cursor_style = SteadyBlock
 ```
 
 Tweak any of these for the current session with `:config_<key>`. Bool keys
@@ -212,4 +214,3 @@ It tries the local `hoogle` CLI first, falls back to web API...
 
 **How do sessions work?**<br>
 Every eval is appended to `~/.local/share/ghcitty/<session>.hs`. `--continue` replays on startup.
-
