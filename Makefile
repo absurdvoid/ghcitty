@@ -1,4 +1,4 @@
-SHELL := /bin/zsh
+SHELL := /bin/sh
 ORIG_PATH := $(PATH)
 export PATH := $(HOME)/.cargo/bin:$(HOME)/.ghcup/bin:$(HOME)/.local/bin:$(PATH)
 
