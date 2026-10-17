@@ -158,7 +158,9 @@ fn cursor_setting(
 }
 
 fn config_path() -> PathBuf {
-    if let Ok(home) = std::env::var("HOME") {
+    if let Ok(cfg_home) = std::env::var("XDG_CONFIG_HOME") {
+        PathBuf::from(cfg_home).join("ghcitty/ghcitty")
+    } else if let Ok(home) = std::env::var("HOME") {
         PathBuf::from(home).join(".ghcitty")
     } else {
         PathBuf::from(".ghcitty")
