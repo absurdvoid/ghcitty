@@ -103,6 +103,7 @@ pub struct GhcProcess {
     _stderr_thread: thread::JoinHandle<()>,
     /// mtime snapshot of loaded modules, for auto-reload
     loaded_mtimes: HashMap<PathBuf, SystemTime>,
+    launch_mode: LaunchMode,
 }
 
 impl GhcProcess {
@@ -168,6 +169,7 @@ impl GhcProcess {
             stderr_lines,
             _stderr_thread: stderr_thread,
             loaded_mtimes: HashMap::new(),
+            launch_mode: mode,
         };
 
         // Init: fuzzy match the first sentinel (GHCi's default prompt may be on the same line)
@@ -604,26 +606,105 @@ impl GhcProcess {
         }
     }
 
-    /// Parse `:show modules` output and snapshot file mtimes.
-    pub fn snapshot_loaded_modules(&mut self) {
-        let Ok((raw, _)) = self.command(":show modules") else {
-            return;
-        };
-        let mut mtimes = HashMap::new();
+    fn ghci_module_paths(&mut self) -> Option<Vec<PathBuf>> {
+        let Ok((raw, _)) = self.command(":show modules") else { return None; };
+        let mut result = Vec::new();
         for line in raw.lines() {
-            // Format: "ModuleName    ( /path/to/File.hs, interpreted )"
+            // The format for the module info from plain ghci and stack ghci is:
+            //     "ModuleName    ( /path/to/File.hs, interpreted )"
+            // Since it already contains the path to the module, we just parse it out.
             let line = line.trim();
             if let Some(start) = line.find("( ") {
                 if let Some(end) = line[start..].find(',') {
                     let path = PathBuf::from(line[start + 2..start + end].trim());
-                    if let Ok(meta) = std::fs::metadata(&path) {
-                        if let Ok(mtime) = meta.modified() {
-                            mtimes.insert(path, mtime);
-                        }
-                    }
+                    result.push(path)
                 }
             }
         }
+        Some(result)
+    }
+
+    fn cabal_repl_module_paths(&mut self) -> Option<Vec<PathBuf>> {
+        let Ok((paths_str, _)) = self.command(":show paths") else { return None; };
+
+        // Parse the current working directory of GHCi.
+        let Some(root): Option<&str> = paths_str
+            .split('\n')
+            .skip_while(|line| line.to_string().trim() != "current working directory:")
+            .skip(1)
+            .next()
+            .and_then(|line| Some(line.trim()))
+            else { return None };
+
+        // Fetch the module search paths from GHCi (e.g. 'app' or 'src').
+        let search_paths: Vec<&str> = paths_str
+            .split('\n')
+            .map(|line| line.trim())
+            .skip_while(|line| line.to_string() != "module import search paths:")
+            .skip(1)
+            .filter(|line|
+                *line != ""
+                    // Filter out build artifacts
+                    && !line.starts_with("dist/")
+                    && !line.starts_with("dist-newstyle/")
+                    && !line.contains("/dist/")
+                    && !line.contains("/dist-newstyle/")
+                    // Filter out noise from cabal multi-repl output.
+                    && !line.starts_with("Unit ID: ")
+                    && !line.starts_with("current working directory:")
+                    && !line.starts_with("module import search paths:")
+                    && !line.ends_with(root)
+                    )
+            .collect();
+
+        // Fetch the module paths from GHCi. When running via cabal repl, only
+        // the module names (e.g. 'Data.ByteString.Lazy') are consistently
+        // available.
+        //
+        // We parse out those module names from each line and split them into
+        // path segments like '["Data", "ByteString", "Lazy"]'.
+        let Ok((modules_str, _)) = self.command(":show modules") else { return None; };
+        let module_paths: Vec<Vec<&str>> = modules_str
+            .split('\n')
+            .filter(|line| line.to_string() != "")
+            .filter_map(|line| line.split(' ').next())
+            .map(|module_name| module_name.split('.').collect())
+            .collect();
+
+        // Combine all permutations of our base, search, and module paths and append the
+        // "hs" extension to end up with a path like "/base/app/Data/ByteString/Lazy.hs",
+        // which should point to a file to watch for changes.
+        //
+        // Since we try all permutations, we may construct some paths that don't really
+        // exist, but they will get filtered out by the metadata check later.
+        let mut result = Vec::new();
+        for search in search_paths {
+            for module in &module_paths {
+                let mut path: PathBuf = [root, search].iter().chain(module.iter()).collect();
+                path.set_extension("hs");
+                result.push(path)
+            }
+        }
+
+        Some(result)
+    }
+
+    /// Parse `:show modules` output and snapshot file mtimes.
+    pub fn snapshot_loaded_modules(&mut self) {
+        let Some(module_paths) = (match self.launch_mode {
+            LaunchMode::Plain | LaunchMode::Stack => self.ghci_module_paths(),
+            LaunchMode::Cabal => self.cabal_repl_module_paths(),
+        }) else { return; };
+
+        let mut mtimes = HashMap::new();
+        for path in module_paths {
+            if let Ok(meta) = std::fs::metadata(&path) {
+                if let Ok(mtime) = meta.modified() {
+                    mtimes.insert(path, mtime);
+                }
+            }
+        }
+
         self.loaded_mtimes = mtimes;
     }
 
