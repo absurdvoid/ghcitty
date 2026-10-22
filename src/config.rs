@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+use crossterm::cursor::SetCursorStyle;
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -9,6 +10,8 @@ pub struct Config {
     pub show_timing: bool,
     pub max_output_lines: usize,
     pub max_output_chars: usize,
+    pub vi_insert_cursor_style: SetCursorStyle,
+    pub vi_normal_cursor_style: SetCursorStyle,
 }
 
 impl Default for Config {
@@ -19,6 +22,8 @@ impl Default for Config {
             show_timing: false,
             max_output_lines: 50,
             max_output_chars: 3000,
+            vi_insert_cursor_style: SetCursorStyle::BlinkingBlock,
+            vi_normal_cursor_style: SetCursorStyle::SteadyBlock,
         }
     }
 }
@@ -37,6 +42,8 @@ impl Config {
             show_timing: bool_setting(&map, "show_timing", false),
             max_output_lines: usize_setting(&map, "max_output_lines", 50),
             max_output_chars: usize_setting(&map, "max_output_chars", 3000),
+            vi_insert_cursor_style: cursor_setting(&map, "vi_insert_cursor_style", SetCursorStyle::BlinkingBlock),
+            vi_normal_cursor_style: cursor_setting(&map, "vi_normal_cursor_style", SetCursorStyle::SteadyBlock),
         }
     }
 }
@@ -58,6 +65,8 @@ impl Config {
                     .parse()
                     .map_err(|_| format!("expected a number, got '{value}'"))?
             }
+            "vi_insert_cursor_style" => self.vi_insert_cursor_style = parse_cursor_style(value)?,
+            "vi_normal_cursor_style" => self.vi_normal_cursor_style = parse_cursor_style(value)?,
             _ => return Err(format!("unknown setting '{key}'")),
         }
         Ok(())
@@ -70,7 +79,23 @@ impl Config {
             ("show_timing", self.show_timing.to_string()),
             ("max_output_lines", self.max_output_lines.to_string()),
             ("max_output_chars", self.max_output_chars.to_string()),
+            ("vi_insert_cursor_style", cursor_style_to_string(self.vi_insert_cursor_style)),
+            ("vi_normal_cursor_style", cursor_style_to_string(self.vi_normal_cursor_style)),
         ]
+    }
+}
+
+// This has to be defined manually since calling to_string() on a SetCursorStyle
+// just returns an empty string.
+fn cursor_style_to_string(v: SetCursorStyle) -> String {
+    match v {
+        SetCursorStyle::DefaultUserShape => "DefaultUserShape".to_string(),
+        SetCursorStyle::BlinkingBlock => "BlinkingBlock".to_string(),
+        SetCursorStyle::SteadyBlock => "SteadyBlock".to_string(),
+        SetCursorStyle::BlinkingUnderScore => "BlinkingUnderScore".to_string(),
+        SetCursorStyle::SteadyUnderScore => "SteadyUnderScore".to_string(),
+        SetCursorStyle::BlinkingBar => "BlinkingBar".to_string(),
+        SetCursorStyle::SteadyBar => "SteadyBar".to_string(),
     }
 }
 
@@ -79,6 +104,19 @@ fn parse_bool(v: &str) -> std::result::Result<bool, String> {
         "true" | "yes" | "1" | "on" => Ok(true),
         "false" | "no" | "0" | "off" => Ok(false),
         _ => Err(format!("expected true/false, got '{v}'")),
+    }
+}
+
+fn parse_cursor_style(v: &str) -> std::result::Result<SetCursorStyle, String> {
+    match v.to_lowercase().as_str() {
+        "defaultusershape" => Ok(SetCursorStyle::DefaultUserShape),
+        "blinkingblock" => Ok(SetCursorStyle::BlinkingBlock),
+        "steadyblock" => Ok(SetCursorStyle::SteadyBlock),
+        "blinkingunderscore" => Ok(SetCursorStyle::BlinkingUnderScore),
+        "steadyunderscore" => Ok(SetCursorStyle::SteadyUnderScore),
+        "blinkingbar" => Ok(SetCursorStyle::BlinkingBar),
+        "steadybar" => Ok(SetCursorStyle::SteadyBar),
+        _ => Err(format!("expected DefaultUserShape/BlinkingBlock/SteadyBlock/BlinkingUnderScore/SteadyUnderScore/BlinkingBar/SteadyBar, got '{v}'")),
     }
 }
 
@@ -95,6 +133,14 @@ fn usize_setting(map: &HashMap<String, String>, key: &str, default: usize) -> us
     map.get(key)
         .or_else(|| map.get(&dashed))
         .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
+}
+
+fn cursor_setting(map: &HashMap<String, String>, key: &str, default: SetCursorStyle) -> SetCursorStyle {
+    let dashed = key.replace('_', "-");
+    map.get(key)
+        .or_else(|| map.get(&dashed))
+        .and_then(|v| parse_cursor_style(v).ok())
         .unwrap_or(default)
 }
 
@@ -159,6 +205,19 @@ mod tests {
         c.set("max_output_lines", "5").unwrap();
         assert_eq!(c.max_output_lines, 5);
         assert!(c.set("max_output_lines", "abc").is_err());
+    }
+
+    #[test]
+    fn test_set_vi_cursor_style() {
+        let mut c = Config::default();
+
+        c.set("vi_insert_cursor_style", "DefaultUserShape").unwrap();
+        assert_eq!(c.vi_insert_cursor_style, SetCursorStyle::DefaultUserShape);
+
+        c.set("vi_normal_cursor_style", "blinkingunderscore").unwrap();
+        assert_eq!(c.vi_normal_cursor_style, SetCursorStyle::BlinkingUnderScore);
+
+        assert!(c.set("vi_insert_cursor_style", "thisisntreal").is_err());
     }
 
     #[test]
