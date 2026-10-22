@@ -144,7 +144,7 @@ All GHCi `:` commands pass through. Extras:
 :cmm <expr>                Show the optimized (-O2) Cmm (C--) for <expr>
 :/ OR :/<???>              Show all bindings OR fuzzy search for <???> binding
 :e OR :edit OR <CTRL> + g  Open $EDITOR, eval on save
-:scratch                   Open the persistent Scratch.hs in $EDITOR, :load on save (no args)
+:scratch                   Open the persistent Scratch.hs in $EDITOR, :add on save (no args)
 :undo <N>                  Undo last <N> expressions
 :config                    List runtime config
 :config_<key> [value]      Toggle a bool, or set a value (session-only)
@@ -160,8 +160,8 @@ pretty_print = true
 max_output_lines = 50                  # 0 disables
 max_output_chars = 3000                # 0 disable
 show_timing = false                    # show eval timing (default: false)
-vi_insert_cursor_style = BlinkingBlock
-vi_normal_cursor_style = SteadyBlock
+cursor_insert = blinking_block         # default/block/bar/underline, or blinking_*
+cursor_normal = block
 ```
 
 Tweak any of these for the current session with `:config_<key>`. Bool keys

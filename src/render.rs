@@ -90,20 +90,32 @@ fn render_diagnostics(diags: &[Diagnostic], config: &Config) -> String {
 }
 
 fn render_value_block(result: &EvalResult, config: &Config, elapsed: Option<Duration>) -> String {
-    let is_io = result
+    // Drop any constraint: `Num a => IO a` -> `IO a`
+    let ty = result
         .type_str
         .as_deref()
-        .map(|t| t.starts_with("IO ") || t == "IO ()")
-        .unwrap_or(true);
+        .map(|t| t.rsplit("=> ").next().unwrap_or(t));
+    let is_io = ty.map(|t| t.starts_with("IO ")).unwrap_or(true);
     let value = if !is_io && config.pretty_print {
         crate::pretty::pretty(&result.value)
     } else {
         result.value.clone()
     };
-    let body = if is_io {
-        render_plain_truncated(&value, config.max_output_lines, config.max_output_chars)
+    let (lines, chars) = (config.max_output_lines, config.max_output_chars);
+    let body = if !is_io {
+        render_value_truncated(&value, lines, chars)
+    } else if ty.is_some_and(|t| t != "IO ()") {
+        // GHCi prints the action's output, then `show` of the result last
+        match value.rsplit_once('\n') {
+            Some((printed, shown)) => format!(
+                "{}\n{}",
+                render_plain_truncated(printed, lines, chars),
+                render_value_truncated(shown, lines, chars)
+            ),
+            None => render_value_truncated(&value, lines, chars),
+        }
     } else {
-        render_value_truncated(&value, config.max_output_lines, config.max_output_chars)
+        render_plain_truncated(&value, lines, chars)
     };
 
     let type_tail = result
@@ -710,8 +722,8 @@ mod tests {
             show_timing: false,
             max_output_lines: 20,
             max_output_chars: 3000,
-            vi_insert_cursor_style: SetCursorStyle::BlinkingBlock,
-            vi_normal_cursor_style: SetCursorStyle::SteadyBlock,
+            cursor_insert: SetCursorStyle::BlinkingBlock,
+            cursor_normal: SetCursorStyle::SteadyBlock,
         }
     }
     fn timing_cfg() -> Config {
@@ -721,8 +733,8 @@ mod tests {
             show_timing: true,
             max_output_lines: 20,
             max_output_chars: 3000,
-            vi_insert_cursor_style: SetCursorStyle::BlinkingBlock,
-            vi_normal_cursor_style: SetCursorStyle::SteadyBlock,
+            cursor_insert: SetCursorStyle::BlinkingBlock,
+            cursor_normal: SetCursorStyle::SteadyBlock,
         }
     }
 
@@ -738,6 +750,19 @@ mod tests {
         let plain = strip_ansi(&out);
         assert!(plain.contains("2"));
         assert!(plain.contains(":: Integer"));
+    }
+
+    #[test]
+    fn test_render_io_result_highlighted() {
+        let r = EvalResult {
+            expr: "putStrLn \"hi 1\" >> pure 3".into(),
+            type_str: Some("IO Int".into()),
+            value: "hi 1\n3".into(),
+            diagnostics: vec![],
+        };
+        let out = render(&r, &default_cfg(), None);
+        assert!(out.starts_with("hi 1\n"));
+        assert!(out.contains(&highlight::highlight_input("3")));
     }
 
     #[test]

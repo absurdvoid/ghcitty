@@ -18,9 +18,8 @@ use std::time::Instant;
 
 use clap::{Parser, Subcommand};
 use reedline::{
-    default_vi_insert_keybindings, default_vi_normal_keybindings, CursorConfig,
-    EditCommand, KeyCode, KeyModifiers, Keybindings, Reedline, ReedlineEvent,
-    ReedlineMenu, Signal, Vi,
+    default_vi_insert_keybindings, default_vi_normal_keybindings, CursorConfig, EditCommand,
+    KeyCode, KeyModifiers, Keybindings, Reedline, ReedlineEvent, ReedlineMenu, Signal, Vi,
 };
 
 // TODO: revisit this cursor control
@@ -289,7 +288,7 @@ fn config_kind(key: &str) -> Option<ConfigKind> {
         "pretty_errors" | "pretty_print" | "show_timing" => Some(ConfigKind::Bool),
         "max_output_lines" | "max_output_chars" => Some(ConfigKind::Number),
         // This isn't really a number, but the handling is identical.
-        "vi_insert_cursor_style" | "vi_normal_cursor_style" => Some(ConfigKind::Number),
+        "cursor_insert" | "cursor_normal" => Some(ConfigKind::Number),
         _ => None,
     }
 }
@@ -501,8 +500,8 @@ fn repl(
     let temp_file = std::env::temp_dir().join("ghcitty-edit.hs");
 
     let cursor_config = CursorConfig {
-        vi_insert: Some(config.vi_insert_cursor_style),
-        vi_normal: Some(config.vi_normal_cursor_style),
+        vi_insert: Some(config.cursor_insert),
+        vi_normal: Some(config.cursor_normal),
         ..CursorConfig::default()
     };
 
@@ -677,8 +676,8 @@ fn repl(
                 drop(g);
                 config_dispatch(&expr, &mut config, json_mode);
                 line_editor = line_editor.with_cursor_config(CursorConfig {
-                    vi_insert: Some(config.vi_insert_cursor_style),
-                    vi_normal: Some(config.vi_normal_cursor_style),
+                    vi_insert: Some(config.cursor_insert),
+                    vi_normal: Some(config.cursor_normal),
                     ..CursorConfig::default()
                 });
                 continue;
@@ -724,7 +723,8 @@ fn repl(
                 match open_scratch() {
                     Ok(Some(path)) => {
                         let mut g = ghc.lock().unwrap();
-                        let cmd = format!(":load {}", path.display());
+                        // :add, not :load, so project modules stay loaded
+                        let cmd = format!(":add {}", path.display());
                         let output = g.passthrough(&cmd)?;
                         g.snapshot_loaded_modules();
                         if json_mode {

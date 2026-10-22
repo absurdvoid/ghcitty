@@ -103,7 +103,6 @@ pub struct GhcProcess {
     _stderr_thread: thread::JoinHandle<()>,
     /// mtime snapshot of loaded modules, for auto-reload
     loaded_mtimes: HashMap<PathBuf, SystemTime>,
-    launch_mode: LaunchMode,
 }
 
 impl GhcProcess {
@@ -169,7 +168,6 @@ impl GhcProcess {
             stderr_lines,
             _stderr_thread: stderr_thread,
             loaded_mtimes: HashMap::new(),
-            launch_mode: mode,
         };
 
         // Init: fuzzy match the first sentinel (GHCi's default prompt may be on the same line)
@@ -475,9 +473,10 @@ impl GhcProcess {
 
     pub fn type_of(&mut self, expr: &str) -> Result<Option<String>> {
         let (raw, _stderr) = self.command(&format!(":type {expr}"))?;
-        Ok(parse::parse_type_output(&format!(
-            "{SENTINEL}\n{raw}{SENTINEL}"
-        )))
+        Ok(parse::parse_type_output(
+            &format!("{SENTINEL}\n{raw}{SENTINEL}"),
+            expr,
+        ))
     }
 
     pub fn eval(&mut self, expr: &str) -> Result<EvalResult> {
@@ -606,105 +605,25 @@ impl GhcProcess {
         }
     }
 
-    fn ghci_module_paths(&mut self) -> Option<Vec<PathBuf>> {
-        let Ok((raw, _)) = self.command(":show modules") else { return None; };
-        let mut result = Vec::new();
-        for line in raw.lines() {
-            // The format for the module info from plain ghci and stack ghci is:
-            //     "ModuleName    ( /path/to/File.hs, interpreted )"
-            // Since it already contains the path to the module, we just parse it out.
-            let line = line.trim();
-            if let Some(start) = line.find("( ") {
-                if let Some(end) = line[start..].find(',') {
-                    let path = PathBuf::from(line[start + 2..start + end].trim());
-                    result.push(path)
-                }
-            }
-        }
-        Some(result)
-    }
-
-    fn cabal_repl_module_paths(&mut self) -> Option<Vec<PathBuf>> {
-        let Ok((paths_str, _)) = self.command(":show paths") else { return None; };
-
-        // Parse the current working directory of GHCi.
-        let Some(root): Option<&str> = paths_str
-            .split('\n')
-            .skip_while(|line| line.to_string().trim() != "current working directory:")
-            .skip(1)
-            .next()
-            .and_then(|line| Some(line.trim()))
-            else { return None };
-
-        // Fetch the module search paths from GHCi (e.g. 'app' or 'src').
-        let search_paths: Vec<&str> = paths_str
-            .split('\n')
-            .map(|line| line.trim())
-            .skip_while(|line| line.to_string() != "module import search paths:")
-            .skip(1)
-            .filter(|line|
-                *line != ""
-                    // Filter out build artifacts
-                    && !line.starts_with("dist/")
-                    && !line.starts_with("dist-newstyle/")
-                    && !line.contains("/dist/")
-                    && !line.contains("/dist-newstyle/")
-                    // Filter out noise from cabal multi-repl output.
-                    && !line.starts_with("Unit ID: ")
-                    && !line.starts_with("current working directory:")
-                    && !line.starts_with("module import search paths:")
-                    && !line.ends_with(root)
-                    )
-            .collect();
-
-        // Fetch the module paths from GHCi. When running via cabal repl, only
-        // the module names (e.g. 'Data.ByteString.Lazy') are consistently
-        // available.
-        //
-        // We parse out those module names from each line and split them into
-        // path segments like '["Data", "ByteString", "Lazy"]'.
-        let Ok((modules_str, _)) = self.command(":show modules") else { return None; };
-        let module_paths: Vec<Vec<&str>> = modules_str
-            .split('\n')
-            .filter(|line| line.to_string() != "")
-            .filter_map(|line| line.split(' ').next())
-            .map(|module_name| module_name.split('.').collect())
-            .collect();
-
-        // Combine all permutations of our base, search, and module paths and append the
-        // "hs" extension to end up with a path like "/base/app/Data/ByteString/Lazy.hs",
-        // which should point to a file to watch for changes.
-        //
-        // Since we try all permutations, we may construct some paths that don't really
-        // exist, but they will get filtered out by the metadata check later.
-        let mut result = Vec::new();
-        for search in search_paths {
-            for module in &module_paths {
-                let mut path: PathBuf = [root, search].iter().chain(module.iter()).collect();
-                path.set_extension("hs");
-                result.push(path)
-            }
-        }
-
-        Some(result)
-    }
-
     /// Parse `:show modules` output and snapshot file mtimes.
     pub fn snapshot_loaded_modules(&mut self) {
-        let Some(module_paths) = (match self.launch_mode {
-            LaunchMode::Plain | LaunchMode::Stack => self.ghci_module_paths(),
-            LaunchMode::Cabal => self.cabal_repl_module_paths(),
-        }) else { return; };
+        let Ok((modules, _)) = self.command(":show modules") else {
+            return;
+        };
+        let units = self
+            .command(":show paths")
+            .map(|(raw, _)| parse_show_paths(&raw))
+            .unwrap_or_default();
+        let scratch = crate::session::scratch_path().ok();
 
         let mut mtimes = HashMap::new();
-        for path in module_paths {
+        for path in module_source_paths(&modules, &units, scratch.as_deref()) {
             if let Ok(meta) = std::fs::metadata(&path) {
                 if let Ok(mtime) = meta.modified() {
                     mtimes.insert(path, mtime);
                 }
             }
         }
-
         self.loaded_mtimes = mtimes;
     }
 
@@ -790,6 +709,85 @@ fn open_pty() -> Result<(i32, i32)> {
 fn split_trailing_sentinel(line: &str) -> Option<&str> {
     let trimmed = line.trim_end_matches('\n').trim_end_matches('\r');
     trimmed.strip_suffix(SENTINEL)
+}
+
+#[derive(Debug, Default, PartialEq)]
+struct UnitPaths {
+    cwd: PathBuf,
+    search_dirs: Vec<PathBuf>,
+}
+
+/// Multi-repl prints one block per `Unit ID:`, each with its own cwd.
+fn parse_show_paths(raw: &str) -> Vec<UnitPaths> {
+    const CWD: &str = "current working directory:";
+    const SEARCH: &str = "module import search paths:";
+    let mut units: Vec<UnitPaths> = Vec::new();
+    let mut section = "";
+    for line in raw.lines().map(str::trim) {
+        if line.starts_with("Unit ID:") {
+            units.push(UnitPaths::default());
+            section = "";
+            continue;
+        }
+        let value = if let Some(rest) = line.strip_prefix(CWD) {
+            section = CWD;
+            rest.trim()
+        } else if let Some(rest) = line.strip_prefix(SEARCH) {
+            section = SEARCH;
+            rest.trim()
+        } else {
+            line
+        };
+        if value.is_empty() || value == "none" {
+            continue;
+        }
+        if units.is_empty() {
+            units.push(UnitPaths::default());
+        }
+        let unit = units.last_mut().unwrap();
+        match section {
+            CWD => unit.cwd = PathBuf::from(value),
+            SEARCH if !is_build_dir(value) => unit.search_dirs.push(unit.cwd.join(value)),
+            _ => {}
+        }
+    }
+    units
+}
+
+fn is_build_dir(path: &str) -> bool {
+    path.split('/')
+        .any(|c| c == "dist" || c == "dist-newstyle" || c == ".stack-work")
+}
+
+/// Bare module names (some `cabal repl` setups) are looked up on the search dirs.
+fn module_source_paths(modules: &str, units: &[UnitPaths], scratch: Option<&Path>) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for line in modules.lines().map(str::trim) {
+        if let Some(path) = path_from_module_line(line) {
+            if units.is_empty() {
+                out.push(PathBuf::from(path));
+            }
+            for unit in units {
+                out.push(unit.cwd.join(path));
+            }
+        } else if let Some(name) = line.split_whitespace().next() {
+            if name == "Scratch" {
+                out.extend(scratch.map(Path::to_path_buf));
+            }
+            let rel = PathBuf::from(name.replace('.', "/")).with_extension("hs");
+            for dir in units.iter().flat_map(|u| &u.search_dirs) {
+                out.push(dir.join(&rel));
+            }
+        }
+    }
+    out
+}
+
+/// "Foo  ( src/Foo.hs, interpreted )" -> "src/Foo.hs"
+fn path_from_module_line(line: &str) -> Option<&str> {
+    let start = line.find("( ")? + 2;
+    let end = start + line[start..].find(',')?;
+    Some(line[start..end].trim())
 }
 
 fn find_ghci() -> Option<String> {
@@ -910,5 +908,74 @@ mod tests {
     fn split_sentinel_handles_crlf() {
         let line = format!("{SENTINEL}\r\n");
         assert_eq!(split_trailing_sentinel(&line), Some(""));
+    }
+
+    // `cabal repl pkga` from a cabal.project root (GHC 9.10)
+    const CABAL_PATHS: &str = "current working directory: \n  /proj/pkga\nmodule import search paths:\n  src\n  /proj/dist-newstyle/build/x86_64-linux/ghc-9.10.3/pkga-0.1/build\n  /proj/dist-newstyle/build/x86_64-linux/ghc-9.10.3/pkga-0.1/build/autogen\n";
+
+    #[test]
+    fn show_paths_single_unit_drops_build_dirs() {
+        assert_eq!(
+            parse_show_paths(CABAL_PATHS),
+            vec![UnitPaths {
+                cwd: "/proj/pkga".into(),
+                search_dirs: vec!["/proj/pkga/src".into()],
+            }]
+        );
+    }
+
+    #[test]
+    fn show_paths_multi_unit_uses_each_cwd() {
+        let raw = "Unit ID: pkga-0.1-inplace\ncurrent working directory: \n  /proj/pkga\nmodule import search paths:\n  src\nUnit ID: pkgb-0.1-inplace-bexe\ncurrent working directory: \n  /proj/pkgb\nmodule import search paths:\n  app\n  /proj/dist-newstyle/build/pkgb-0.1/build/autogen\n";
+        let units = parse_show_paths(raw);
+        let dirs: Vec<_> = units.iter().flat_map(|u| &u.search_dirs).collect();
+        assert_eq!(
+            dirs,
+            [Path::new("/proj/pkga/src"), Path::new("/proj/pkgb/app")]
+        );
+    }
+
+    #[test]
+    fn module_paths_relative_to_ghci_cwd() {
+        let units = parse_show_paths(CABAL_PATHS);
+        let modules = "A.Lib            ( src/A/Lib.hs, interpreted )\n";
+        assert_eq!(
+            module_source_paths(modules, &units, None),
+            vec![PathBuf::from("/proj/pkga/src/A/Lib.hs")]
+        );
+    }
+
+    #[test]
+    fn module_paths_absolute_kept() {
+        let units = parse_show_paths(CABAL_PATHS);
+        let modules = "Main  ( /proj/pkgb/app/Main.hs, interpreted )\n";
+        assert_eq!(
+            module_source_paths(modules, &units, None),
+            vec![PathBuf::from("/proj/pkgb/app/Main.hs")]
+        );
+    }
+
+    #[test]
+    fn module_paths_from_bare_names() {
+        let units = parse_show_paths(CABAL_PATHS);
+        let modules = "AdventureMode.Util.Format\nScratch\n";
+        let scratch = Path::new("/data/ghcitty/Scratch.hs");
+        assert_eq!(
+            module_source_paths(modules, &units, Some(scratch)),
+            vec![
+                PathBuf::from("/proj/pkga/src/AdventureMode/Util/Format.hs"),
+                PathBuf::from("/data/ghcitty/Scratch.hs"),
+                PathBuf::from("/proj/pkga/src/Scratch.hs"),
+            ]
+        );
+    }
+
+    #[test]
+    fn module_paths_without_show_paths() {
+        let modules = "Foo  ( Foo.hs, interpreted )\nBar\n";
+        assert_eq!(
+            module_source_paths(modules, &[], None),
+            vec![PathBuf::from("Foo.hs")]
+        );
     }
 }

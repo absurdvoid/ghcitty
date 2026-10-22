@@ -93,7 +93,7 @@ pub fn extract_between_sentinels(raw: &str) -> &str {
     s.strip_suffix('\n').unwrap_or(s)
 }
 
-pub fn parse_type_output(raw: &str) -> Option<String> {
+pub fn parse_type_output(raw: &str, expr: &str) -> Option<String> {
     let cleaned = extract_between_sentinels(raw);
     // GHCi prints: `expr :: SomeType`
     // Handle multiline types (they continue with leading whitespace)
@@ -103,7 +103,9 @@ pub fn parse_type_output(raw: &str) -> Option<String> {
         .collect::<Vec<_>>()
         .join(" ");
 
-    let (_before, after) = full.split_once("::")?;
+    // The echoed expr can have its own `::`, e.g. `pure (1 :: Int)`
+    let rest = full.strip_prefix(expr.trim()).unwrap_or(&full);
+    let (_before, after) = rest.split_once("::")?;
     Some(after.trim().to_string())
 }
 
@@ -417,20 +419,23 @@ mod tests {
     #[test]
     fn test_parse_type_simple() {
         let raw = format!("{SENTINEL}\nit :: Integer\n{SENTINEL}");
-        assert_eq!(parse_type_output(&raw), Some("Integer".to_string()));
+        assert_eq!(parse_type_output(&raw, "it"), Some("Integer".to_string()));
     }
 
     #[test]
     fn test_parse_type_polymorphic() {
         let raw = format!("{SENTINEL}\nit :: Num a => a\n{SENTINEL}");
-        assert_eq!(parse_type_output(&raw), Some("Num a => a".to_string()));
+        assert_eq!(
+            parse_type_output(&raw, "it"),
+            Some("Num a => a".to_string())
+        );
     }
 
     #[test]
     fn test_parse_type_multiline() {
         let raw = format!("{SENTINEL}\nit :: (Num a,\n      Show a)\n   => a\n{SENTINEL}");
         assert_eq!(
-            parse_type_output(&raw),
+            parse_type_output(&raw, "it"),
             Some("(Num a, Show a) => a".to_string())
         );
     }
@@ -439,8 +444,22 @@ mod tests {
     fn test_parse_type_function() {
         let raw = format!("{SENTINEL}\nmap :: (a -> b) -> [a] -> [b]\n{SENTINEL}");
         assert_eq!(
-            parse_type_output(&raw),
+            parse_type_output(&raw, "it"),
             Some("(a -> b) -> [a] -> [b]".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_type_annotated_expr() {
+        let raw = format!("{SENTINEL}\npure @IO (100 :: Int) :: IO Int\n{SENTINEL}");
+        assert_eq!(
+            parse_type_output(&raw, "pure @IO (100 :: Int)"),
+            Some("IO Int".to_string())
+        );
+        let raw = format!("{SENTINEL}\npure \"hi\" :: IO String :: IO String\n{SENTINEL}");
+        assert_eq!(
+            parse_type_output(&raw, "pure \"hi\" :: IO String"),
+            Some("IO String".to_string())
         );
     }
 

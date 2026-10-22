@@ -18,7 +18,7 @@ test:
 
 install:
 	cargo install --path .
-	codesign --force --sign - $(HOME)/.cargo/bin/ghcitty
+	@if [ "$$(uname)" = Darwin ]; then codesign --force --sign - $(HOME)/.cargo/bin/ghcitty; fi
 	@active="$$(PATH='$(ORIG_PATH)' command -v ghcitty 2>/dev/null)"; \
 	expected="$(HOME)/.cargo/bin/ghcitty"; \
 	if [ -n "$$active" ] && [ "$$active" != "$$expected" ]; then \
