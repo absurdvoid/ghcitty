@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.6.0] - 2026-10-28
+
+### Added
+- `f :: T` for an unknown `f` waits for the definition (#43)
+- Per-mode vi cursors: `cursor_insert`, `cursor_normal` (#38)
+
+### Changed
+- `:scratch` uses `:add`, project modules stay loaded
+- IO results: output plain, final value highlighted
+
+### Fixed
+- `:core` / `:stg` / `:cmm` with local project imports (#42)
+- Auto-reload under `cabal repl` (#39)
+- Type of `pure (1 :: Int)` no longer cut at the inner `::`
+
 ## [0.5.0] - 2026-10-14
 
 ### Added

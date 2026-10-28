@@ -11,7 +11,7 @@ use reedline::{
 };
 
 use crate::ghc::GhcProcess;
-use crate::highlight;
+use crate::{highlight, parse};
 
 // ** Prompt **
 
@@ -376,17 +376,32 @@ impl ReedlineHighlighter for HaskellHighlighter {
 
 pub struct HaskellValidator {
     submitting: Arc<AtomicBool>,
+    ghc: Arc<Mutex<GhcProcess>>,
 }
 
 impl HaskellValidator {
-    pub fn new(submitting: Arc<AtomicBool>) -> Self {
-        Self { submitting }
+    pub fn new(submitting: Arc<AtomicBool>, ghc: Arc<Mutex<GhcProcess>>) -> Self {
+        Self { submitting, ghc }
+    }
+
+    /// `f :: T` with an unknown `f` starts a definition, so wait for it (a known `f` is just an annotation)
+    fn awaits_definition(&self, line: &str) -> bool {
+        if line.contains('\n') {
+            return false;
+        }
+        let Some(names) = parse::signature_names(line) else {
+            return false;
+        };
+        let Ok(mut g) = self.ghc.lock() else {
+            return false;
+        };
+        names.iter().any(|n| !matches!(g.type_of(n), Ok(Some(_))))
     }
 }
 
 impl ReedlineValidator for HaskellValidator {
     fn validate(&self, line: &str) -> ValidationResult {
-        if is_incomplete(line) {
+        if is_incomplete(line) || self.awaits_definition(line) {
             ValidationResult::Incomplete
         } else {
             self.submitting.store(true, Ordering::Relaxed);

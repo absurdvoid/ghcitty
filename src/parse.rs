@@ -237,7 +237,7 @@ pub fn simple_diagnostic(severity: &str, message: String) -> Diagnostic {
 /// Declaration detection: `let x = ...`, `f x = ...`, guarded defs.
 /// Used to decide whether to query the type of the bound name after eval.
 pub fn is_let_binding(input: &str) -> bool {
-    let trimmed = input.trim();
+    let trimmed = skip_signature(input.trim()).trim();
 
     // Explicit "let x = ...", but not "let x = ... in ..." (which is an expression)
     if trimmed.starts_with("let ") {
@@ -314,8 +314,38 @@ fn has_top_level_in(s: &str) -> bool {
     })
 }
 
+/// Names declared by a lone type signature line: `f :: T`, `f, g :: T`, `(<+>) :: T`
+pub fn signature_names(line: &str) -> Option<Vec<String>> {
+    let (lhs, rhs) = line.trim().split_once("::")?;
+    if rhs.trim().is_empty() {
+        return None;
+    }
+    let names: Vec<String> = lhs.split(',').map(|n| n.trim().to_string()).collect();
+    let is_name = |n: &str| {
+        if let Some(op) = n.strip_prefix('(').and_then(|s| s.strip_suffix(')')) {
+            return !op.is_empty() && !op.starts_with(':') && op.chars().all(is_op_char);
+        }
+        n.starts_with(|c: char| c.is_lowercase() || c == '_')
+            && n.chars()
+                .all(|c| c.is_alphanumeric() || c == '_' || c == '\'')
+    };
+    names.iter().all(|n| is_name(n)).then_some(names)
+}
+
+fn is_op_char(c: char) -> bool {
+    "!#$%&*+./<=>?@\\^|-~:".contains(c)
+}
+
+/// `f :: T\nf = ...` -> `f = ...`, so a leading signature doesn't hide the binding
+fn skip_signature(input: &str) -> &str {
+    match input.split_once('\n') {
+        Some((first, rest)) if signature_names(first).is_some() => rest,
+        _ => input,
+    }
+}
+
 pub fn let_bound_name(input: &str) -> Option<String> {
-    let trimmed = input.trim();
+    let trimmed = skip_signature(input.trim()).trim();
     // Strip "let " prefix if present
     let start = trimmed.strip_prefix("let ").unwrap_or(trimmed).trim_start();
     // First token is the name (could be an operator in parens)
@@ -598,5 +628,42 @@ mod tests {
         let input = "fizzbuzz n\n  | n `mod` 15 == 0 = \"FizzBuzz\"\n  | otherwise = show n";
         assert!(is_let_binding(input));
         assert_eq!(let_bound_name(input), Some("fizzbuzz".into()));
+    }
+
+    #[test]
+    fn test_signature_names() {
+        assert_eq!(
+            signature_names("f :: [Int] -> [Int]"),
+            Some(vec!["f".into()])
+        );
+        assert_eq!(
+            signature_names("f, g' :: Int"),
+            Some(vec!["f".into(), "g'".into()])
+        );
+        assert_eq!(
+            signature_names("(<+>) :: a -> a -> a"),
+            Some(vec!["(<+>)".into()])
+        );
+    }
+
+    #[test]
+    fn test_signature_names_rejects_expressions() {
+        assert_eq!(signature_names("f x :: Int"), None);
+        assert_eq!(signature_names("x = 1 :: Int"), None);
+        assert_eq!(signature_names("Just 1 :: Maybe Int"), None);
+        assert_eq!(signature_names("f ::"), None);
+        assert_eq!(signature_names("map (+1) [1]"), None);
+    }
+
+    #[test]
+    fn test_signature_then_definition() {
+        let input = "f :: [Int] -> [Int]\nf = map (+1)";
+        assert!(is_let_binding(input));
+        assert_eq!(let_bound_name(input), Some("f".into()));
+    }
+
+    #[test]
+    fn test_lone_signature_not_a_binding() {
+        assert!(!is_let_binding("xs :: [Int]"));
     }
 }

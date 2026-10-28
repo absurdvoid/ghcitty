@@ -447,7 +447,7 @@ fn repl(
     let hinter = Box::new(input::GhciHinter::new(Arc::clone(&ghc)));
     let submitting = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let highlighter = Box::new(input::HaskellHighlighter::new(Arc::clone(&submitting)));
-    let validator = Box::new(input::HaskellValidator::new(submitting));
+    let validator = Box::new(input::HaskellValidator::new(submitting, Arc::clone(&ghc)));
 
     let menu = input::completion_menu();
 
@@ -866,12 +866,13 @@ fn repl(
                     continue;
                 }
                 let imports = g.current_imports();
+                let search_dirs = g.search_dirs();
                 drop(g);
                 let bindings = session_bindings(sess);
                 if !json_mode {
                     eprint!("{}{CR}", style::dim().paint("(compiling with -O2...)"));
                 }
-                match core::dump(kind, &rest, &imports, &bindings, mode) {
+                match core::dump(kind, &rest, &imports, &bindings, &search_dirs, mode) {
                     Ok(out) => {
                         if json_mode {
                             println!(
