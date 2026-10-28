@@ -3,6 +3,7 @@
 //! module, compile it with `-O2` and a dump flag, and highlight what comes out.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::process::Command;
 
 use crate::error::{Error, Result};
@@ -41,32 +42,33 @@ const BINDING: &str = "it";
 /// Compile `expr` under `-O2` and return the highlighted dump, or GHC's error
 /// if it doesn't typecheck. `bindings` are the session's `let` definitions,
 /// spliced in as top-level decls so `:core <name>` resolves prompt-defined names.
+/// `search_dirs` lets ghc find the project's own modules (e.g. `import Main`)
 pub fn dump(
     kind: DumpKind,
     expr: &str,
     imports: &[String],
     bindings: &[String],
+    search_dirs: &[PathBuf],
     mode: LaunchMode,
 ) -> Result<String> {
     let dir = std::env::temp_dir().join("ghcitty-core");
     std::fs::create_dir_all(&dir)?;
     let src = dir.join("GhcittyDump.hs");
-    std::fs::write(&src, build_module(expr, imports, bindings))?;
+    std::fs::write(&src, build_module(kind, expr, imports, bindings))?;
+    // Project modules compiled last time get reused, but this one always rebuilds
+    for ext in ["hi", "o"] {
+        let _ = std::fs::remove_file(dir.join("GhcittyDump").with_extension(ext));
+    }
 
-    let out_dir = dir.to_string_lossy().to_string();
-    let src_path = src.to_string_lossy().to_string();
-    let flags = [
-        "-O2",
-        "-fforce-recomp",
-        kind.dump_flag(),
-        "-dsuppress-all",
-        "-dsuppress-uniques",
-        "-dno-typeable-binds",
-        "-c",
-        "-outputdir",
-        &out_dir,
-        &src_path,
+    let mut flags = vec![
+        "-O2".to_string(),
+        "--make".to_string(),
+        "-no-link".to_string(),
+        "-outputdir".to_string(),
+        dir.to_string_lossy().to_string(),
     ];
+    flags.extend(search_dirs.iter().map(|d| format!("-i{}", d.display())));
+    flags.push(src.to_string_lossy().to_string());
 
     let output = run_ghc(mode, &flags)?;
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -91,8 +93,13 @@ pub fn dump(
     Ok(render(kind, &strip_header(&filtered)))
 }
 
-fn build_module(expr: &str, imports: &[String], bindings: &[String]) -> String {
-    let mut src = String::from("{-# OPTIONS_GHC -w #-}\nmodule GhcittyDump where\n");
+fn build_module(kind: DumpKind, expr: &str, imports: &[String], bindings: &[String]) -> String {
+    // Dump flags go here, not on the command line, so only this module gets dumped
+    let mut src = format!(
+        "{{-# OPTIONS_GHC -w {} -dsuppress-all -dsuppress-uniques -dno-typeable-binds #-}}\n\
+         module GhcittyDump where\n",
+        kind.dump_flag()
+    );
     for imp in imports {
         src.push_str(imp);
         src.push('\n');
@@ -126,7 +133,7 @@ fn build_module(expr: &str, imports: &[String], bindings: &[String]) -> String {
 
 /// Run ghc the same way the REPL was launched (plain, stack or cabal) so the
 /// temp module sees the same packages.
-fn run_ghc(mode: LaunchMode, flags: &[&str]) -> Result<std::process::Output> {
+fn run_ghc(mode: LaunchMode, flags: &[String]) -> Result<std::process::Output> {
     let mut cmd = match mode {
         LaunchMode::Plain => {
             let mut c = Command::new("ghc");
@@ -335,10 +342,12 @@ mod tests {
     #[test]
     fn build_module_includes_imports_and_bindings() {
         let src = build_module(
+            DumpKind::Core,
             "y",
             &["import Data.List".to_string()],
             &["y = (\\x -> x + 1) 41".to_string()],
         );
+        assert!(src.starts_with("{-# OPTIONS_GHC -w -ddump-simpl "));
         assert!(src.contains("module GhcittyDump where"));
         assert!(src.contains("import Data.List"));
         assert!(src.contains("y = (\\x -> x + 1) 41"));

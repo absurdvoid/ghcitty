@@ -471,6 +471,17 @@ impl GhcProcess {
             .collect()
     }
 
+    /// Where GHCi looks for the project's modules, as absolute paths
+    pub fn search_dirs(&mut self) -> Vec<PathBuf> {
+        let Ok((raw, _)) = self.command(":show paths") else {
+            return Vec::new();
+        };
+        parse_show_paths(&raw)
+            .into_iter()
+            .flat_map(|u| u.search_dirs)
+            .collect()
+    }
+
     pub fn type_of(&mut self, expr: &str) -> Result<Option<String>> {
         let (raw, _stderr) = self.command(&format!(":type {expr}"))?;
         Ok(parse::parse_type_output(
